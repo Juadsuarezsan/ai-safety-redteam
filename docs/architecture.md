@@ -1,71 +1,56 @@
 # Architecture — AI Safety & Red Teaming Framework
 
-## Summary
+![Architecture](architecture.svg)
 
-12 OWASP-categorized attacks + response analyzer (refusal/leak/PII/compliance) + guardrails layer (input screen + output redact). Quantifies attack-success reduction.
+## What the system does
 
-## High-level data flow
+It attacks an LLM application with a corpus of adversarial prompts, decides for
+each one whether the system was compromised, maps the outcome to the OWASP LLM
+Top 10, adds a guardrails layer, and quantifies how much the guardrails reduce
+attack success — with a measured false-positive rate on benign traffic.
 
-```
-              HTTP request
-                   │
-                   ▼
-        ┌──────────────────────┐
-        │   FastAPI (src/api)  │
-        │   Pydantic schemas   │
-        └──────────┬───────────┘
-                   │
-                   ▼
-        ┌──────────────────────┐
-        │  Core domain logic   │
-        │  (src/agents | src/  │
-        │   engine | etc.)     │
-        └──────────┬───────────┘
-                   │
-        ┌──────────┴──────────┐
-        ▼                     ▼
-   ┌──────────┐         ┌──────────────┐
-   │ External │         │ Eval harness │
-   │   APIs   │         │ (src/eval)   │
-   │ (Claude, │         │              │
-   │  Voyage, │         │ Synthetic    │
-   │  etc.)   │         │ gold set     │
-   └──────────┘         └──────────────┘
-```
+## Layers (one folder per concern)
 
-## Boundary separation
+- **`schemas.py`** — every object that crosses a boundary (attack, result,
+  report, verdict) is a Pydantic model, so the JSON in `eval/runs/`, the API
+  response and the PDF all share one definition.
+- **`attacks/`** — the built-in corpus (106 attacks, all 10 OWASP categories,
+  hand-written ground truth) and the benign query set for FP rate.
+- **`detectors/`** — `Detector` Protocol. Regex detectors are always on; ML
+  detectors (DeBERTa prompt-injection, `unitary/toxic-bert`, Presidio) live
+  behind the same Protocol with **lazy imports** so the base install never pulls
+  torch/transformers/presidio.
+- **`analyzers/`** — turns an (attack, response) pair into a success verdict
+  (refusal / compliance / PII leak / denial-of-service).
+- **`guardrails/`** — screens inputs (blocks injection/jailbreak patterns) and
+  sanitises outputs (PII redaction, HTML neutralisation); both directions timed.
+- **`targets/`** — `Target` Protocol. `HttpTarget` (httpx + timeout + tenacity)
+  talks to live systems through per-system adapters (`chat` = Project 01,
+  `research` = Project 03); synthetic targets drive the eval and demo offline.
+- **`redteam/`** — the async runner (bounded concurrency, per-attack `trace_id`,
+  OWASP aggregation, latency/token/cost metrics, FP measurement), plus the LLM
+  red-teamer (variant generation) and the LLM-as-judge (numbered rubric), both
+  behind an `LlmClient` Protocol.
+- **`storage/`** — run persistence: SQLite by default, Postgres (psycopg pool)
+  behind the same interface.
+- **`reports/`** — reportlab PDF security reports.
+- **`api/`** — FastAPI (`/api/red-team`, `/health`, `/api/runs`) with CORS,
+  slowapi rate limiting and 422 validation.
+- **`eval/`** (repo root, not shipped in the wheel) — `python -m eval.run`
+  writes `eval/runs/*.json` and regenerates `eval/RESULTS.md`.
 
-The codebase separates four concerns explicitly, mapping one folder per concern:
+## Request flow
 
-- **`src/api/`** — HTTP transport. Pydantic schemas, route handlers, exception → HTTP
-  mapping. Nothing in here knows about Claude / databases / embeddings; it only
-  knows how to call the domain layer.
-- **`src/<domain>/`** (agents, retrieval, extractors, etc.) — Pure domain logic.
-  Takes typed inputs, returns typed outputs. Has no FastAPI imports.
-- **`src/config.py`** — Single source of truth for env-driven configuration.
-  Read via `get_settings()` (lru-cached). Tests call `get_settings.cache_clear()`
-  when they mutate env vars.
-- **`src/eval/`** — Reads its own fixtures from `data/eval/`, runs the domain
-  layer in isolation, writes a structured report. Never used by the API at
-  request time (except as the `/api/eval/run` convenience endpoint which just
-  forwards).
+An attack prompt goes to the target through the adapter. The raw response is
+sanitised by the output guardrail (when enabled), analysed for compliance, and
+recorded with its OWASP category and full instrumentation. The runner aggregates
+per-category success, computes the baseline-vs-guardrailed reduction and the
+false-positive rate, persists the run, and (in eval) regenerates the results
+table. The same report renders as a PDF.
 
-## External dependencies
+## Provenance discipline
 
-| Service | Required for | Free fallback |
-|---|---|---|
-| Anthropic Claude API | Real LLM reasoning | Deterministic heuristic / template |
-| Voyage AI embeddings | Production retrieval quality | `sentence-transformers/all-MiniLM-L6-v2` |
-| Cohere Rerank v3 | Top-k re-ordering precision | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
-| Postgres + pgvector | Persistent state + vector search | In-memory store |
-
-When the relevant API key is missing, the project picks the free fallback and
-keeps running. No code path raises on missing optional credentials.
-
-## What lives where
-
-- **Production secrets** → `.env` (gitignored)
-- **Domain logic** → `src/`
-- **Test data + fixtures** → `data/eval/`
-- **Generated outputs** → `data/processed/` (gitignored; reproducible from `scripts/`)
-- **Specs (source of truth)** → `/docs/portafolio_specs.md` at repo root
+Every run records its mode (`synthetic`, `deterministic_fallback`, `llm`). A run
+against a system with no LLM configured is labelled *deterministic fallback, no
+LLM* and never presented as the target's real quality. Cells needing a key read
+`pendiente (requiere ANTHROPIC_API_KEY)`.
