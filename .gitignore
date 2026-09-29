@@ -17,3 +17,10 @@ models/checkpoints/
 *.parquet
 logs/
 .ipynb_checkpoints/
+data/runs.sqlite3
+data/external_sample.json
+build/
+dist/
+*.egg-info/
+.coverage
+htmlcov/

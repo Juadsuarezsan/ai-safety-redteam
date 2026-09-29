@@ -1,45 +1,55 @@
 # Technical decisions — AI Safety & Red Teaming Framework
 
-This document records the non-obvious choices and what alternative was rejected.
-A line gets added here every time the system gains a knob a future maintainer
-might second-guess.
+## 1. Detectors behind a `Protocol` with lazy ML imports
 
-## Why Pydantic v2 over `attrs` or `dataclasses`
+The regex detectors are always on and dependency-free, so CI and a fresh clone
+work with a ~200 MB install. The ML detectors (DeBERTa prompt-injection,
+`unitary/toxic-bert`, Presidio) implement the same `Detector` Protocol but are
+imported *inside* their constructors and live in the optional `ml` extra
+(≈6 GB with CUDA wheels). Rejected: making torch a base dependency — it breaks
+CI, bloats the image and is unnecessary for the regex baseline. The loader is
+injectable, so ML detectors are unit-tested with fakes without any download.
 
-Pydantic validates at the I/O boundary (HTTP / LLM JSON output / DB rows) and
-its v2 rewrite is fast enough that we don't pay a runtime cost. Plain
-`dataclasses` would force us to write the same validators by hand; `attrs`
-matches Pydantic v2 on ergonomics but isn't the default in FastAPI.
+## 2. Attack success is rule-based first, LLM-judge second
 
-## Why LangGraph over LangChain Chains
+Each attack carries hand-written `success_indicators`; success = the target did
+not refuse AND complied (indicator present, PII leaked, or an oversized response
+for DoS probes). This is deterministic, free and reproducible in CI. The
+LLM-as-judge with a numbered 1–5 rubric is layered on top for nuance and is gated
+on `ANTHROPIC_API_KEY`. Rejected: judge-only scoring — non-reproducible and
+spends credits on every run.
 
-The agent flow has explicit branches (route after intent classification,
-reflection loops with caps, parallel/sequential rounds). LangGraph's
-`StateGraph` lets us see those transitions in code; LangChain `Chain`s hide
-them inside `__call__` overloads, which makes debugging the wrong path
-painful in production.
+## 3. `HttpTarget` with adapters, not one hard-coded client
 
-## Why a free-tier fallback for every paid API
+Systems under test differ in payload and response shape, so the target is one
+class plus a small `(path, build_request, extract_reply)` adapter per system.
+Adding Project 03 was ~10 lines. httpx gives async + explicit timeouts; tenacity
+retries only 5xx/network (never 4xx — a 422 is a deterministic rejection, i.e. a
+defense, surfaced as a refusal). Rejected: retrying 4xx (pointless) and a
+requests-based sync client (blocks the event loop).
 
-Every external API has been wrapped behind a `Protocol` with a
-deterministic-but-realistic offline implementation. Three benefits:
-1. Tests run in CI without burning real credits.
-2. Demo on a new machine works without 6 signups.
-3. When a paid API rate-limits us in prod, the fallback is the failover —
-   not a 500 response.
+## 4. Model pinned to a dated ID
 
-## Why we don't auto-tune anything in production
+`claude-sonnet-4-5-20250929`, never `claude-latest`, so red-teamer and judge runs
+are comparable over time. Timeouts and tenacity wrap every external call.
 
-When the eval drift detector flags a metric drop, the system **proposes** a
-parameter change with simulated impact (against the gold set) — it does not
-auto-apply. The applier is the human or, in the prod loop, an A/B canary on
-10% traffic that auto-rolls-back on regression. Silent auto-tuning at 3am is
-how RAG degrades for three weeks before anyone notices.
+## 5. Deterministic fallback labelled everywhere
 
-## Why a 70% coverage floor (not 90%)
+Both synthetic targets and every run record their `mode`. A run without an LLM is
+labelled *deterministic fallback, no LLM* in `RESULTS.md`, the README and the PDF,
+and is never shown as the target's real quality. This keeps the anti-fabrication
+rule enforceable: numbers come only from a saved `eval/runs/*.json`.
 
-90% pushes time into mocking I/O thoroughly enough to write the mock, which
-is wasted effort compared to writing more integration-level eval cases. We
-front-load eval coverage instead. The 70% floor is enough to catch the
-"someone deleted a private helper that secretly was used elsewhere" class of
-bug.
+## 6. SQLite by default, Postgres behind the same interface
+
+The run store is a Protocol with a SQLite implementation (zero-ops, works in CI
+and on a fresh clone) and a psycopg-pool Postgres implementation for production.
+`get_repository` picks Postgres when `DATABASE_URL` is set and falls back to
+SQLite if the database is unreachable. Rejected: requiring Postgres to run the
+tool at all.
+
+## 7. Installable package (`ai_safety_framework`), eval harness kept out of it
+
+Domain code lives in `src/ai_safety_framework/` and ships as a wheel with a
+console script; the `eval/` harness stays at the repo root and is not packaged,
+because it is a development/reporting tool, not library API.

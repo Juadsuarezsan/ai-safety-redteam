@@ -1,25 +1,113 @@
-    [project]
-    name = "ai-safety-framework"
-    version = "0.1.0"
-    description = "AI Safety & Red Teaming — OWASP LLM Top 10 attacks + guardrails"
-    requires-python = ">=3.11,<3.14"
-    license = { text = "MIT" }
-    dependencies = [
-        "fastapi==0.115.0",
-"uvicorn[standard]==0.32.0",
-"pydantic==2.9.2",
-"pydantic-settings==2.6.0",
-"python-dotenv==1.0.1",
-"httpx==0.27.2",
-"tenacity==9.0.0",
-"loguru==0.7.2",
-"anthropic==0.39.0",
-"presidio-analyzer==2.2.355",
-"presidio-anonymizer==2.2.355",
-"transformers==4.45.2",
-"torch==2.4.1",
-"psycopg[binary,pool]==3.2.3",
-    ]
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
 
-    [project.optional-dependencies]
-    dev = ["pytest==8.3.3", "pytest-asyncio==0.24.0", "ruff==0.6.9", "black==24.10.0", "mypy==1.11.2"]
+[project]
+name = "ai-safety-framework"
+version = "1.0.0"
+description = "AI Safety & Red Teaming framework: OWASP LLM Top 10 attack corpus, guardrails, evaluation and PDF security reports for LLM systems"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "Juan David Suárez Sánchez", email = "juadsuarezsan@unal.edu.co" }]
+keywords = ["llm", "security", "red-teaming", "owasp", "guardrails", "prompt-injection"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
+dependencies = [
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.32.0",
+    "pydantic==2.9.2",
+    "pydantic-settings==2.6.0",
+    "python-dotenv==1.0.1",
+    "httpx==0.27.2",
+    "tenacity==9.0.0",
+    "loguru==0.7.2",
+    "anthropic==0.39.0",
+    "slowapi==0.1.9",
+    "reportlab==4.2.5",
+    "psycopg[binary,pool]==3.2.3",
+]
+
+[project.optional-dependencies]
+# Heavy ML detectors (≈6 GB with CUDA wheels). Imported lazily; the base install never needs them.
+ml = [
+    "presidio-analyzer==2.2.355",
+    "presidio-anonymizer==2.2.355",
+    "transformers==4.45.2",
+    "torch==2.4.1",
+]
+observability = ["langsmith==0.1.137"]
+dev = [
+    "pytest==8.3.3",
+    "pytest-asyncio==0.24.0",
+    "pytest-cov==5.0.0",
+    "pytest-mock==3.14.0",
+    "respx==0.21.1",
+    "ruff==0.6.9",
+    "black==24.10.0",
+    "mypy==1.11.2",
+    "build==1.2.2",
+    "nbformat==5.10.4",
+    "nbclient==0.10.0",
+    "ipykernel==6.29.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/Juadsuarezsan/ai-safety-redteam"
+Repository = "https://github.com/Juadsuarezsan/ai-safety-redteam"
+
+[project.scripts]
+ai-safety-redteam = "ai_safety_framework.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ai_safety_framework = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["notebooks", ".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+# E501 (line length) is owned by black, which intentionally leaves long string literals.
+ignore = ["B008", "E501"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+extend-exclude = "notebooks|\\.venv|build|dist"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "src"
+warn_unreachable = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = ["reportlab.*", "slowapi.*", "transformers.*", "presidio_analyzer.*", "presidio_anonymizer.*", "langsmith.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["ignore::DeprecationWarning"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["src"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "\\.\\.\\.$"]
